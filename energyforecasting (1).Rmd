@@ -1,0 +1,183 @@
+---
+title: "forecasting"
+output: html_document
+---
+```{r}
+library(readxl)
+library(ggplot2)
+library(rlang)
+library(timeDate)
+library(dplyr)
+setwd("C:/Users/willi/Desktop/energy")
+
+# load the datasets
+load <- read_excel("load_weather_dataset.xlsx", sheet="load")
+temp <- read_excel("load_weather_dataset.xlsx", sheet="historical temperature")
+sun <- read_excel("load_weather_dataset.xlsx", sheet="sunshine duration")
+```
+```{r}
+names(load)[2] <- "demand"
+tail(temp)
+```
+
+```{r}
+ggplot(data=load, aes(x=Date, y=demand)) +
+  geom_line()
+```
+
+
+```{r}
+load <- mutate(load, Weekend = as.numeric(isWeekend(load$Date)))
+load <- mutate(load, log_demand = log(demand))
+```
+
+```{r}
+# calculating daily average temperature values / (maximum - minimum values)
+
+library(dplyr)
+library(lubridate)
+
+names(temp)[1] <- "Date"
+
+temp <- temp %>%
+  mutate(Date = floor_date(Date, "day")) %>%
+  group_by(Date) %>%
+  summarise(avgLondon = mean(London), avgLeeds = mean(Leeds), avgBristol = mean(Bristol),
+            difLondon = max(London)-min(London), difLeeds = max(Leeds)-min(Leeds), difBristol = max(Bristol)-min(Bristol))
+
+tail(temp)
+
+```
+
+```{r}
+load <- left_join(temp, load, by="Date" )
+
+names(sun)[1] <- "Date"
+load <- left_join(load, sun, by="Date" )
+head(load)
+```
+
+```{r}
+# London
+cor(na.omit(load$avgLondon), na.omit(load$demand))
+cor(na.omit(load$difLondon), na.omit(load$demand))
+```
+```{r}
+# Leeds
+cor((load$avgLeeds), (load$demand))
+cor((load$difLeeds), (load$demand))
+
+```
+
+```{r}
+# Bristol
+cor((load$avgBristol), (load$demand))
+cor((load$difBristol), (load$demand))
+
+# average temperature correlations betwen demand all higher than (max-min)
+```
+```{r}
+library(zoo)
+library(mlr)
+
+yq <- as.yearqtr(as.yearmon(load$Date) + 1/12) #+1/12 to shift one month
+load$seasons <- factor(format(yq, "%q"), levels = 1:4,
+                     labels = c("winter", "spring", "summer", "fall"))
+
+load <- cbind(load, createDummyFeatures(load$seasons, cols = "var"))
+```
+
+```{r}
+colnames(load)[colnames(load) == 'London'] <- 'sunLondon'
+colnames(load)[colnames(load) == 'Leeds'] <- 'sunLeeds'
+colnames(load)[colnames(load) == 'Bristol'] <- 'sunBristol'
+```
+
+```{r}
+# previous days demand variable
+
+library(Hmisc)
+load$demand_prev <- Lag(load$demand, 1)
+tail(load)
+```
+
+```{r}
+tail(load, 10)
+```
+
+
+
+```{r}
+# MA 7 day
+library(zoo)
+
+load$demand_MA7 <- rollmeanr(load$demand, k=7, fill=NA)
+load$demand_prev_MA7 <- rollmeanr(load$demand_prev, k=7, fill=NA)
+load$sunLondon_MA7 <- rollmeanr(load$sunLondon, k=7, fill=NA)
+load$sunLeeds_MA7 <- rollmeanr(load$sunLeeds, k=7, fill=NA)
+load$sunBristol_MA7 <- rollmeanr(load$sunBristol, k=7, fill=NA)
+#load$avgLondon_MA7 <- rollmeanr(load$avgLondon, k=7, fill=NA)
+#load$avgLeeds_MA7 <- rollmeanr(load$avgLeeds, k=7, fill=NA)
+#load$avgBristol_MA7 <- rollmeanr(load$avgBristol, k=7, fill=NA)
+load$demand_MA7_square <- (load$demand_prev_MA7**2)
+#load$avgLondon_square <- (load$avgLondon**2)
+#load$avgLeeds_square <- (load$avgLeeds**2)
+#load$avgBristol_square <- (load$avgBristol**2)
+tail(load)
+```
+
+```{r}
+load.null <- lm(demand_MA7 ~ 1, load) %>% stats::step(direction = "both")#only include intercept
+load.full <- lm(demand_MA7 ~ demand_prev_MA7 + avgLondon + avgLeeds + avgBristol + sunLondon_MA7 + sunLeeds_MA7 + sunBristol_MA7 + Weekend + winter + spring + fall, data = load) %>% stats::step(direction = "both")
+```
+
+```{r}
+library(stargazer)
+final_model <- lm(demand_MA7 ~ demand_prev_MA7 + avgLondon + avgLeeds + sunLondon_MA7+sunLeeds_MA7 + sunBristol_MA7 + winter + spring, data = load)
+stargazer(final_model,  header=FALSE, align=TRUE, type="text", title="Model 1")
+final_model
+```
+
+```{r}
+tail(load)
+```
+```{r}
+library(writexl)
+write_xlsx(load, "C:/Users/willi/Desktop/energy/load.xlsx")
+```
+
+
+```{r}
+# demand_MA7 ~ demand_prev_MA7 + avgLondon + avgLeeds + sunLondon_MA7 + 
+# sunLeeds_MA7 + winter + spring
+
+
+demand_prev = 26743.70
+avgLondontemp1 = 6.696412
+avgLeedstemp1 = 9.274328
+Londonsun1 = 240.8857
+Leedssun1 = 272.9493
+Bristolsun1 = 279.6245
+winter1 = 0
+spring1 = 1
+
+
+forecast = 1010.45 +0.9784*(demand_prev) -14.153*(avgLondontemp1) -19.599*(avgLeedstemp1)+0.2472*(Londonsun1) -0.1451*(Leedssun1) -184.8958*(winter1) -231.84*(spring1) 
+
+
+lg = log(forecast)
+sprintf("Forecast: %f", forecast)
+lg
+```
+```{r}
+RMSE <- function(error) { sqrt(mean(error^2)) }
+RMSE(final_model$residuals)
+```
+```{r}
+RSS <- c(crossprod(final_model$residuals))
+MSE <- RSS / length(final_model$residuals)
+RMSE <- sqrt(MSE)
+RMSE
+```
+
+
